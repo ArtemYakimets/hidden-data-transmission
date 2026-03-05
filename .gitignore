@@ -1,0 +1,11 @@
+.vagrant/
+*.log
+*.pyc
+__pycache__/
+*.box
+*.iso
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
