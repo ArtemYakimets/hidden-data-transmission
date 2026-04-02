@@ -40,13 +40,8 @@ def parse_args():
     p.add_argument("--buffer-size", type=int, default=DEFAULT_BUFFER_SIZE,
                    help="Symbols per burst (traffic buffering)")
     p.add_argument("--dummy-rate", type=float, default=DEFAULT_DUMMY_RATE,
-                   help="Avg dummy packets per interval")
+                   help="Avg dummy packets per covert packet")
     return p.parse_args()
-
-
-def send_dummy(udp, dest, L):
-    """Send a single dummy packet with random length."""
-    udp.sendto(os.urandom(random.randint(1, L)), dest)
 
 
 def main():
@@ -71,7 +66,7 @@ def main():
           f"interval={args.interval}s  buffer={args.buffer_size}")
     print(f"[*] Message: {len(secret)} bytes -> {total} symbols")
 
-    # ── TCP control → UZ (with retry for startup timing) ──
+    # ── TCP control → UZ (with retry) ──
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     for attempt in range(1, 16):
         try:
@@ -101,22 +96,16 @@ def main():
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dest = (args.uz_host, UDP_PORT)
 
+    # Phase 1: covert packets at fixed intervals (Model 3)
     t0 = time.time()
     idx = 0
     burst_num = 0
-    guard = args.interval * 0.15  # quiet zone before each burst
 
     while idx < total:
         target_time = t0 + burst_num * args.interval
-
-        # Dummy traffic while waiting for the next burst slot
         while time.time() < target_time:
-            remaining = target_time - time.time()
-            if remaining > guard and random.random() < args.dummy_rate * 0.025:
-                send_dummy(udp, dest, L)
-            time.sleep(0.01)
+            time.sleep(0.005)
 
-        # Send covert burst (traffic buffering: buffer_size symbols at once)
         count = min(args.buffer_size, total - idx)
         for j in range(count):
             pkt_len = encode_symbol(symbols[idx], n, L)
@@ -128,16 +117,20 @@ def main():
         burst_num += 1
         print(f"\r[*] Sent {idx}/{total} symbols", end="", flush=True)
 
-    # Trailing dummy packets to mask the end of transmission
-    for _ in range(random.randint(2, 5)):
-        time.sleep(random.uniform(0.05, 0.2))
-        send_dummy(udp, dest, L)
+    print()
+
+    # Phase 2: trailing dummy packets (mask end of transmission)
+    num_dummies = max(1, int(total * args.dummy_rate))
+    print(f"[*] Sending {num_dummies} dummy packets ...")
+    for _ in range(num_dummies):
+        time.sleep(random.uniform(0.02, 0.15))
+        udp.sendto(os.urandom(random.randint(1, L)), dest)
 
     time.sleep(0.5)
     send_control(tcp, {"type": "end"})
     tcp.close()
     udp.close()
-    print(f"\n[*] Done — {total} symbols sent")
+    print(f"[*] Done — {total} covert + {num_dummies} dummy packets sent")
 
 
 if __name__ == "__main__":

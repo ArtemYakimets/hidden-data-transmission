@@ -1,19 +1,18 @@
 """Receiver (P2) / Attacker — decodes covert channel messages.
 
-Collects UDP packets with timestamps, then uses timing analysis
-to separate covert packets from dummy traffic and reconstruct
-the hidden message from packet lengths.
+Collects UDP packets in arrival order. Covert packets are sent first
+(at fixed intervals, Model 3), followed by dummy traffic. The receiver
+takes the first N packets (by arrival time) and decodes their lengths.
 """
 
 import argparse
-import bisect
 import socket
 import threading
 import time
 
 from common import (
     TCP_PORT, UDP_PORT,
-    SYNC_DELAY, BURST_DELAY,
+    SYNC_DELAY,
     decode_symbol, symbols_to_message, recv_control,
 )
 
@@ -58,45 +57,18 @@ class PacketCollector:
                 break
 
 
-def decode_covert(packets, num_symbols, n, interval, buffer_size, t0):
-    """Extract covert symbols from captured packets using timing analysis.
+def decode_covert(packets, num_symbols, n):
+    """Decode covert symbols from the first *num_symbols* packets by time.
 
-    Covert packets arrive at predictable times (fixed interval, Model 3).
-    Dummy packets arrive at random times and are filtered out.
+    Covert packets are sent before dummy traffic, so the earliest
+    packets carry the hidden data.
     """
     sorted_pkts = sorted(packets, key=lambda p: p[0])
-    times = [p[0] for p in sorted_pkts]
-
-    # Burst delay: smaller of default or value that prevents burst overlap
-    bd = (min(BURST_DELAY, interval / max(buffer_size, 1) / 3)
-          if buffer_size > 1 else 0)
-    tolerance = interval * 0.35
-
     decoded = []
-    used = set()
-
-    for si in range(num_symbols):
-        burst_idx = si // buffer_size
-        pos_in_burst = si % buffer_size
-        expected = t0 + burst_idx * interval + pos_in_burst * bd
-
-        # Binary-search + small window for nearest packet
-        idx = bisect.bisect_left(times, expected)
-        best, best_diff = None, float("inf")
-        for c in range(max(0, idx - 10), min(len(sorted_pkts), idx + 10)):
-            if c in used:
-                continue
-            d = abs(times[c] - expected)
-            if d < best_diff:
-                best_diff = d
-                best = c
-
-        if best is not None and best_diff < tolerance:
-            decoded.append(decode_symbol(sorted_pkts[best][1], n))
-            used.add(best)
-        else:
-            decoded.append(0)
-
+    for i in range(min(num_symbols, len(sorted_pkts))):
+        decoded.append(decode_symbol(sorted_pkts[i][1], n))
+    while len(decoded) < num_symbols:
+        decoded.append(0)
     return decoded
 
 
@@ -118,7 +90,6 @@ def main():
     print(f"[P2] Control connection from {addr}")
 
     params = None
-    t0 = None
 
     while True:
         msg = recv_control(conn)
@@ -127,7 +98,6 @@ def main():
 
         if msg["type"] == "start":
             params = msg
-            t0 = time.time() + SYNC_DELAY
             print(f"[P2] START — {params['num_symbols']} symbols, "
                   f"L={params['L']}, n={params['n']}, "
                   f"T={params['interval']}s, buf={params['buffer_size']}")
@@ -142,9 +112,6 @@ def main():
                 collector.packets,
                 params["num_symbols"],
                 params["n"],
-                params["interval"],
-                params["buffer_size"],
-                t0,
             )
             result = symbols_to_message(symbols, alphabet, params["num_bytes"])
 
@@ -154,11 +121,12 @@ def main():
             print(f"[P2] Packets: {total_pkts} total, "
                   f"{covert_pkts} covert, {dummy_pkts} dummy")
 
+            print(f"[P2] Decoded bytes (hex): {result.hex()}")
             try:
                 text = result.decode("utf-8")
                 print(f"[P2] Decoded message: {text}")
             except UnicodeDecodeError:
-                print(f"[P2] Decoded {len(result)} bytes (binary data)")
+                print(f"[P2] Cannot decode as UTF-8 ({len(result)} bytes)")
 
             if args.output:
                 with open(args.output, "wb") as fh:
