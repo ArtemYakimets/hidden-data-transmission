@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# run_lab1.sh — Lab 1 demo: passive security device
+# run_lab1.sh — Lab 1 demo: passive security device, timing covert channel
 set -e
 
 MSG="Hello from covert channel"
 
 echo "============================================="
 echo "=== Lab 1: Passive Security Device        ==="
+echo "=== Variant 7: Model 2, Example 8         ==="
 echo "============================================="
 echo ""
 

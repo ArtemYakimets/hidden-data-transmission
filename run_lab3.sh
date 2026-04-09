@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # run_lab3.sh — Lab 3 demo: active security device countermeasures
+# Variant 7: timing covert channel (inter-packet intervals)
 # Runs two schemes sequentially and shows comparison.
 set -e
 
@@ -7,15 +8,16 @@ MSG="Hello from covert channel"
 
 echo "============================================="
 echo "=== Lab 3: Active Security Device         ==="
+echo "=== Variant 7: Model 2, Example 8         ==="
 echo "============================================="
 echo ""
 echo "Original message: \"$MSG\""
 echo ""
 
 # ─────────────────────────────────────────────────
-# Scheme 1: Normalize packet lengths (k=32)
+# Scheme 1: Jitter — add random delay (max 60ms)
 # ─────────────────────────────────────────────────
-echo "--- Scheme 1: Normalize (k=32) ---"
+echo "--- Scheme 1: Jitter (max=60ms) ---"
 echo "    Limits covert channel bandwidth"
 echo ""
 
@@ -27,8 +29,8 @@ echo "[1/3] Starting receiver ..."
 vagrant ssh p2 -c "cd /home/vagrant/scripts && python3 start_daemon.py /tmp/receiver.log receiver.py -o /tmp/decoded.txt"
 sleep 2
 
-echo "[2/3] Starting security device (normalize, k=32) ..."
-vagrant ssh uz -c "cd /home/vagrant/scripts && python3 start_daemon.py /tmp/uz.log security_device.py --mode normalize --k 32"
+echo "[2/3] Starting security device (jitter, max=60ms) ..."
+vagrant ssh uz -c "cd /home/vagrant/scripts && python3 start_daemon.py /tmp/uz.log security_device.py --mode jitter --max-jitter 0.06"
 sleep 2
 
 echo "[3/3] Sending message ..."
@@ -46,11 +48,11 @@ vagrant ssh p2 -c "cat /tmp/receiver.log 2>/dev/null" || true
 echo ""
 
 # ─────────────────────────────────────────────────
-# Scheme 2: Pad all packets to L=1024
+# Scheme 2: Regulate — fixed interval (100ms)
 # ─────────────────────────────────────────────────
 echo ""
-echo "--- Scheme 2: Pad to fixed length (L=1024) ---"
-echo "    Completely eliminates covert channel"
+echo "--- Scheme 2: Regulate (T=100ms) ---"
+echo "    Completely eliminates timing covert channel"
 echo ""
 
 vagrant ssh p2 -c "pkill -f receiver.py 2>/dev/null; pkill -f start_daemon 2>/dev/null; rm -f /tmp/receiver.log /tmp/decoded.txt" 2>/dev/null || true
@@ -61,8 +63,8 @@ echo "[1/3] Starting receiver ..."
 vagrant ssh p2 -c "cd /home/vagrant/scripts && python3 start_daemon.py /tmp/receiver.log receiver.py -o /tmp/decoded.txt"
 sleep 2
 
-echo "[2/3] Starting security device (pad, L=1024) ..."
-vagrant ssh uz -c "cd /home/vagrant/scripts && python3 start_daemon.py /tmp/uz.log security_device.py --mode pad --max-len 1024"
+echo "[2/3] Starting security device (regulate, T=100ms) ..."
+vagrant ssh uz -c "cd /home/vagrant/scripts && python3 start_daemon.py /tmp/uz.log security_device.py --mode regulate --fixed-interval 0.10"
 sleep 2
 
 echo "[3/3] Sending message ..."

@@ -1,8 +1,9 @@
-"""Receiver (P2) / Attacker — decodes covert channel messages.
+"""Receiver (P2) — decodes covert timing channel.
 
-Collects UDP packets in arrival order. Covert packets are sent first
-(at fixed intervals, Model 3), followed by dummy traffic. The receiver
-takes the first N packets (by arrival time) and decodes their lengths.
+Collects UDP packets and measures inter-packet intervals.
+Covert packets arrive first; intervals encode bits:
+  interval < threshold → bit 0
+  interval >= threshold → bit 1
 """
 
 import argparse
@@ -12,15 +13,15 @@ import time
 
 from common import (
     TCP_PORT, UDP_PORT,
-    SYNC_DELAY,
-    decode_symbol, symbols_to_message, recv_control,
+    SYNC_DELAY, THRESHOLD,
+    bits_to_message, recv_control,
 )
 
 
 def parse_args():
-    """Parse CLI arguments for the receiver / attacker."""
+    """Parse CLI arguments for the receiver."""
     p = argparse.ArgumentParser(
-        description="Covert channel receiver (P2 / attacker)",
+        description="Covert timing channel receiver (P2)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("-o", "--output", type=str,
@@ -29,10 +30,10 @@ def parse_args():
 
 
 class PacketCollector:
-    """Background UDP listener that records (timestamp, length) pairs."""
+    """Background UDP listener that records arrival timestamps."""
 
     def __init__(self):
-        self.packets = []
+        self.timestamps = []
         self._running = False
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind(("0.0.0.0", UDP_PORT))
@@ -52,24 +53,43 @@ class PacketCollector:
         while self._running:
             try:
                 data, _ = self._sock.recvfrom(65535)
-                self.packets.append((time.time(), len(data)))
+                self.timestamps.append(time.time())
             except OSError:
                 break
 
 
-def decode_covert(packets, num_symbols, n):
-    """Decode covert symbols from the first *num_symbols* packets by time.
+def decode_timing(timestamps, num_bits, threshold, buffer_size):
+    """Decode bits from inter-packet intervals.
 
-    Covert packets are sent before dummy traffic, so the earliest
-    packets carry the hidden data.
+    Accounts for burst structure: every buffer_size covert packets
+    are followed by one burst-separator packet whose interval is
+    skipped during decoding.
     """
-    sorted_pkts = sorted(packets, key=lambda p: p[0])
-    decoded = []
-    for i in range(min(num_symbols, len(sorted_pkts))):
-        decoded.append(decode_symbol(sorted_pkts[i][1], n))
-    while len(decoded) < num_symbols:
-        decoded.append(0)
-    return decoded
+    sorted_ts = sorted(timestamps)
+    intervals = []
+    for i in range(1, len(sorted_ts)):
+        intervals.append(sorted_ts[i] - sorted_ts[i - 1])
+
+    bits = []
+    iv_idx = 0
+    bits_in_burst = 0
+
+    while len(bits) < num_bits and iv_idx < len(intervals):
+        iv = intervals[iv_idx]
+        iv_idx += 1
+
+        bits.append(0 if iv < threshold else 1)
+        bits_in_burst += 1
+
+        # Skip burst-separator interval
+        if bits_in_burst >= buffer_size and len(bits) < num_bits:
+            iv_idx += 1
+            bits_in_burst = 0
+
+    while len(bits) < num_bits:
+        bits.append(0)
+
+    return bits, intervals
 
 
 def main():
@@ -79,7 +99,6 @@ def main():
     collector.start()
     print(f"[P2] UDP collector listening on :{UDP_PORT}")
 
-    # TCP control server
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", TCP_PORT))
@@ -98,28 +117,39 @@ def main():
 
         if msg["type"] == "start":
             params = msg
-            print(f"[P2] START — {params['num_symbols']} symbols, "
-                  f"L={params['L']}, n={params['n']}, "
-                  f"T={params['interval']}s, buf={params['buffer_size']}")
+            print(f"[P2] START — {params['num_bits']} bits, "
+                  f"pkt={params['pkt_size']}B, "
+                  f"T0={params['t_short']}s, T1={params['t_long']}s, "
+                  f"thr={params['threshold']}s, buf={params['buffer_size']}")
 
         elif msg["type"] == "end":
             print("[P2] END received, decoding ...")
             collector.stop()
             time.sleep(0.2)
 
-            alphabet = params["L"] // params["n"]
-            symbols = decode_covert(
-                collector.packets,
-                params["num_symbols"],
-                params["n"],
+            threshold = params.get("threshold", THRESHOLD)
+            bits, intervals = decode_timing(
+                collector.timestamps,
+                params["num_bits"],
+                threshold,
+                params["buffer_size"],
             )
-            result = symbols_to_message(symbols, alphabet, params["num_bytes"])
+            result = bits_to_message(bits, params["num_bytes"])
 
-            total_pkts = len(collector.packets)
-            covert_pkts = params["num_symbols"]
-            dummy_pkts = total_pkts - covert_pkts
-            print(f"[P2] Packets: {total_pkts} total, "
-                  f"{covert_pkts} covert, {dummy_pkts} dummy")
+            total_pkts = len(collector.timestamps)
+            covert_pkts = params["num_bits"] + 1
+            dummy_pkts = max(0, total_pkts - covert_pkts)
+
+            print(f"[P2] Packets received: {total_pkts} total")
+            print(f"[P2] Covert: {covert_pkts} pkts "
+                  f"({params['num_bits']} intervals = bits)")
+            print(f"[P2] Dummy: {dummy_pkts} pkts")
+
+            if intervals:
+                covert_ivs = intervals[:params["num_bits"]]
+                if covert_ivs:
+                    avg_iv = sum(covert_ivs) / len(covert_ivs)
+                    print(f"[P2] Avg covert interval: {avg_iv*1000:.1f} ms")
 
             print(f"[P2] Decoded bytes (hex): {result.hex()}")
             try:

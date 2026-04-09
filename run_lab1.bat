@@ -8,6 +8,7 @@ set "MSG=Hello from covert channel"
 
 echo =============================================
 echo === Lab 1: Passive Security Device        ===
+echo === Variant 7: Model 2, Example 8         ===
 echo =============================================
 echo.
 
